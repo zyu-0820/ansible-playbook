@@ -1,0 +1,7 @@
+---
+- name: Test Connection to Hosts
+  hosts: all
+  gather_facts: no  # 如果只是测试连通性，可以关闭收集信息以加快速度
+  tasks:
+    - name: Ping the target nodes
+      ansible.builtin.ping:
