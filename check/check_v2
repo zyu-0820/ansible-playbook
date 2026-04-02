@@ -1,0 +1,318 @@
+---
+- name: 服务器资源巡检剧本
+  hosts: all
+  gather_facts: yes
+  remote_user: "{{ ansible_user | default('root') }}"
+  
+  vars:
+    inspection_date: "{{ ansible_date_time.date }}"
+    report_dir: "/tmp/inspection_reports"
+    save_local_report: true
+    
+  tasks:
+    - name: 创建报告目录
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+      
+    # ========== 1. 系统基本信息 ==========
+    - name: 收集系统基本信息
+      setup:
+        filter:
+          - 'ansible_os_family'
+          - 'ansible_distribution*'
+          - 'ansible_kernel'
+          - 'ansible_architecture'
+          - 'ansible_hostname'
+          - 'ansible_processor*'
+          - 'ansible_memtotal_mb'
+          - 'ansible_swaptotal_mb'
+      register: system_info
+      
+    # ========== 2. CPU 使用情况 ==========
+    - name: 获取 CPU 负载信息
+      shell: |
+        uptime | awk -F 'load average:' '{print $2}'
+      register: cpu_load
+      
+    - name: 获取 CPU 使用率
+      shell: |
+        top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1
+      register: cpu_usage
+      ignore_errors: yes
+      
+    # ========== 3. 内存使用情况 ==========
+    - name: 获取内存使用详情
+      shell: |
+        free -m | awk 'NR==2{printf "总内存: %s MB, 已用: %s MB, 空闲: %s MB, 使用率: %.2f%%", $2, $3, $4, $3*100/$2}'
+      register: memory_usage
+      
+    - name: 获取 Swap 使用情况
+      shell: |
+        free -m | awk 'NR==3{printf "Swap总: %s MB, 已用: %s MB, 空闲: %s MB, 使用率: %.2f%%", $2, $3, $4, ($3*100/$2)}'
+      register: swap_usage
+      ignore_errors: yes
+      
+    # ========== 4. 磁盘使用情况 ==========
+    - name: 获取所有挂载点磁盘使用率
+      shell: |
+        df -h | grep -v "tmpfs\|devtmpfs\|overlay" | awk 'NR>1 {printf "挂载点: %-20s 总容量: %-8s 已用: %-8s 可用: %-8s 使用率: %s\n", $6, $2, $3, $4, $5}'
+      register: disk_usage
+      
+    - name: 检查磁盘使用率超过阈值的分区
+      shell: |
+        df -h | grep -v "tmpfs\|devtmpfs\|overlay" | awk 'NR>1 {gsub(/%/,"",$5); if($5>80) print "警告: " $6 " 分区使用率达到 " $5 "%"}'
+      register: disk_warning
+      ignore_errors: yes
+      
+    # ========== 5. 网络连接情况 ==========
+    - name: 获取网络连接统计
+      shell: |
+        echo "TCP连接状态统计:"
+        ss -tunap 2>/dev/null | grep -v "LISTEN" | awk '{print $1}' | sort | uniq -c
+      register: network_stats
+      
+    - name: 获取网络接口流量统计
+      shell: |
+        echo "网络接口统计:"
+        for interface in $(ls /sys/class/net/ | grep -v lo); do
+          rx_bytes=$(cat /sys/class/net/$interface/statistics/rx_bytes 2>/dev/null)
+          tx_bytes=$(cat /sys/class/net/$interface/statistics/tx_bytes 2>/dev/null)
+          echo "$interface: RX=$(numfmt --to=iec $rx_bytes 2>/dev/null || echo $rx_bytes), TX=$(numfmt --to=iec $tx_bytes 2>/dev/null || echo $tx_bytes)"
+        done
+      register: network_traffic
+      
+    # ========== 6. 系统进程情况 ==========
+    - name: 获取 TOP 10 CPU 占用进程
+      shell: |
+        echo "TOP 10 CPU 占用进程:"
+        ps aux --sort=-%cpu | head -11 | tail -10 | awk '{printf "PID: %-8s CPU: %-6s MEM: %-6s CMD: %-s\n", $2, $3, $4, $11}'
+      register: top_cpu_processes
+      
+    - name: 获取 TOP 10 内存占用进程
+      shell: |
+        echo "TOP 10 内存占用进程:"
+        ps aux --sort=-%mem | head -11 | tail -10 | awk '{printf "PID: %-8s MEM: %-6s CPU: %-6s CMD: %-s\n", $2, $4, $3, $11}'
+      register: top_mem_processes
+      
+    - name: 获取系统总进程数
+      shell: |
+        echo "总进程数: $(ps aux | wc -l)"
+        echo "僵尸进程数: $(ps aux | awk '$8=="Z" {print $0}' | wc -l)"
+      register: process_count
+      
+    # ========== 7. 系统日志和错误 ==========
+    - name: 检查系统错误日志（最近10条）
+      shell: |
+        journalctl -p err -n 10 --no-pager 2>/dev/null || dmesg | tail -20
+      register: system_errors
+      ignore_errors: yes
+      
+    # ========== 8. 系统时间和服务 ==========
+    - name: 获取系统时间和时区
+      shell: |
+        echo "系统时间: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "时区: $(timedatectl 2>/dev/null | grep "Time zone" | awk '{print $3}' || cat /etc/timezone 2>/dev/null)"
+        echo "NTP同步: $(timedatectl 2>/dev/null | grep "NTP synchronized" | awk '{print $3}' || echo '未知')"
+      register: system_time
+      
+    - name: 检查关键服务运行状态
+      shell: |
+        echo "关键服务状态:"
+        for service in sshd crond rsyslog; do
+          if systemctl is-active $service &>/dev/null; then
+            echo "$service: 运行中 ✓"
+          else
+            echo "$service: 未运行 ✗"
+          fi
+        done
+      register: service_status
+      ignore_errors: yes
+      
+    # ========== 9. 安全相关检查 ==========
+    - name: 检查最近登录记录
+      shell: |
+        echo "最近5次登录:"
+        last -n 5 | head -5
+        echo ""
+        echo "当前登录用户:"
+        who
+      register: login_records
+      
+    - name: 检查 sudo 授权文件最近修改
+      shell: |
+        echo "sudoers文件修改时间:"
+        stat -c '%y' /etc/sudoers 2>/dev/null || echo "无法获取"
+      register: sudoers_check
+      
+    # ========== 10. 生成巡检报告 ==========
+    - name: 生成 JSON 格式巡检报告
+      set_fact:
+        inspection_report:
+          巡检时间: "{{ inspection_date }}"
+          巡检主机: "{{ inventory_hostname }}"
+          ====================================
+          系统信息:
+            主机名: "{{ ansible_hostname }}"
+            操作系统: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+            内核版本: "{{ ansible_kernel }}"
+            架构: "{{ ansible_architecture }}"
+            CPU核心数: "{{ ansible_processor_cores }}"
+            总内存: "{{ ansible_memtotal_mb }} MB"
+          ====================================
+          CPU状态:
+            Load Average: "{{ cpu_load.stdout }}"
+            CPU使用率: "{{ cpu_usage.stdout }}%"
+          ====================================
+          内存状态: "{{ memory_usage.stdout }}"
+          Swap状态: "{{ swap_usage.stdout }}"
+          ====================================
+          磁盘状态:
+            "{{ disk_usage.stdout_lines }}"
+          磁盘警告: "{{ disk_warning.stdout_lines }}"
+          ====================================
+          网络统计: "{{ network_stats.stdout }}"
+          ====================================
+          进程状态: "{{ process_count.stdout }}"
+          ====================================
+          系统时间: "{{ system_time.stdout }}"
+          关键服务: "{{ service_status.stdout }}"
+          ====================================
+          系统错误日志(最近): "{{ system_errors.stdout }}"
+          
+    - name: 生成文本格式报告文件
+      copy:
+        content: |
+          ========================================
+          服务器资源巡检报告
+          ========================================
+          
+          巡检时间: {{ inspection_date }}
+          巡检主机: {{ inventory_hostname }}
+          
+          ========================================
+          一、系统基本信息
+          ========================================
+          主机名: {{ ansible_hostname }}
+          操作系统: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          内核版本: {{ ansible_kernel }}
+          架构: {{ ansible_architecture }}
+          CPU核心数: {{ ansible_processor_cores }}
+          总内存: {{ ansible_memtotal_mb }} MB
+          Swap总大小: {{ ansible_swaptotal_mb }} MB
+          
+          ========================================
+          二、CPU 使用情况
+          ========================================
+          Load Average: {{ cpu_load.stdout }}
+          CPU使用率: {{ cpu_usage.stdout }}%
+          
+          ========================================
+          三、内存使用情况
+          ========================================
+          {{ memory_usage.stdout }}
+          {{ swap_usage.stdout }}
+          
+          ========================================
+          四、磁盘使用情况
+          ========================================
+          {% for line in disk_usage.stdout_lines %}
+          {{ line }}
+          {% endfor %}
+          
+          {% if disk_warning.stdout_lines %}
+          磁盘使用警告:
+          {% for warn in disk_warning.stdout_lines %}
+          {{ warn }}
+          {% endfor %}
+          {% endif %}
+          
+          ========================================
+          五、网络连接情况
+          ========================================
+          {{ network_stats.stdout }}
+          
+          网络流量统计:
+          {{ network_traffic.stdout }}
+          
+          ========================================
+          六、进程情况
+          ========================================
+          {{ process_count.stdout }}
+          
+          TOP 10 CPU 占用进程:
+          {{ top_cpu_processes.stdout }}
+          
+          TOP 10 内存占用进程:
+          {{ top_mem_processes.stdout }}
+          
+          ========================================
+          七、系统时间与服务
+          ========================================
+          {{ system_time.stdout }}
+          
+          {{ service_status.stdout }}
+          
+          ========================================
+          八、安全相关
+          ========================================
+          {{ login_records.stdout }}
+          
+          sudoers文件: {{ sudoers_check.stdout }}
+          
+          ========================================
+          九、系统错误日志（最近）
+          ========================================
+          {{ system_errors.stdout }}
+          
+          ========================================
+          巡检结束
+          ========================================
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_{{ inspection_date }}_inspection.txt"
+      delegate_to: localhost
+      
+    - name: 输出关键摘要到控制台
+      debug:
+        msg:
+          - "========== 巡检摘要 =========="
+          - "主机: {{ inventory_hostname }}"
+          - "CPU负载: {{ cpu_load.stdout }}"
+          - "CPU使用率: {{ cpu_usage.stdout }}%"
+          - "{{ memory_usage.stdout }}"
+          - "磁盘警告: {{ disk_warning.stdout_lines | default('无磁盘使用率超过80%') }}"
+          - "报告已保存: {{ report_dir }}/{{ inventory_hostname }}_{{ inspection_date }}_inspection.txt"
+          
+    # ========== 11. 健康检查评分（可选） ==========
+    - name: 健康评分
+      set_fact:
+        health_score: 100
+        health_issues: []
+        
+    - name: 检查 CPU 负载（超过核心数扣分）
+      set_fact:
+        health_score: "{{ health_score - 10 }}"
+        health_issues: "{{ health_issues + ['CPU负载过高'] }}"
+      when: cpu_load.stdout.split(',')[0] | float > ansible_processor_cores
+      
+    - name: 检查内存使用率（超过85%扣分）
+      set_fact:
+        health_score: "{{ health_score - 15 }}"
+        health_issues: "{{ health_issues + ['内存使用率过高'] }}"
+      when: memory_usage.stdout.split('使用率: ')[1].replace('%', '') | float > 85
+      
+    - name: 检查磁盘使用率
+      set_fact:
+        health_score: "{{ health_score - 20 }}"
+        health_issues: "{{ health_issues + ['磁盘使用率过高'] }}"
+      when: disk_warning.stdout != ""
+      
+    - name: 输出健康评分
+      debug:
+        msg:
+          - "========== 健康评分 =========="
+          - "总分: {{ health_score }}/100"
+          - "问题列表: {{ health_issues | default('无异常') }}"
+      when: health_score is defined
