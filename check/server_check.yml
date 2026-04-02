@@ -10,7 +10,7 @@
       changed_when: false
     
     - name: Get memory details
-      shell: "free -m | awk '/Mem:/ {printf \"total=%d used=%d free=%d available=%d\", $2, $3, $4, $7}'"
+      shell: "free -m | grep Mem | awk '{print \"total=\"$2\" used=\"$3\" available=\"$7}'"
       register: mem_result
       changed_when: false
     
