@@ -1,0 +1,43 @@
+---
+- name: Server Resource Inspection
+  hosts: all
+  gather_facts: yes  # 必须开启，否则无法获取系统信息
+  tasks:
+    - name: Show System Info
+      debug:
+        msg: >
+          Host: {{ inventory_hostname }} |
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }} |
+          Kernel: {{ ansible_kernel }} |
+          Uptime: {{ ansible_uptime_seconds | int // 86400 }} days
+
+
+    - name: Check CPU Load
+      debug:
+        msg: >
+          CPU Cores: {{ ansible_processor_vcpus }} |
+          Load Average (1m): {{ ansible_loadavg['1m'] }}
+
+
+
+    - name: Check Memory Usage
+      debug:
+        msg: >
+          Total Memory: {{ (ansible_memtotal_mb / 1024) | round(1) }} GB |
+          Used Memory: {{ ((ansible_memtotal_mb - ansible_memfree_mb - ansible_cached_mb - ansible_buffers_mb) / 1024) | round(1) }} GB |
+          Available: {{ (ansible_memfree_mb / 1024) | round(1) }} GB
+
+
+    - name: Check Disk Space (Root)
+      debug:
+        msg: >
+          Device: {{ ansible_mounts[0]['device'] }} |
+          Total: {{ (ansible_mounts[0]['size_total'] / 1024 / 1024 / 1024) | round(1) }} GB |
+          Used: {{ (ansible_mounts[0]['size_used'] / 1024 / 1024 / 1024) | round(1) }} GB |
+          Available: {{ (ansible_mounts[0]['size_available'] / 1024 / 1024 / 1024) | round(1) }} GB
+      when: ansible_mounts is defined
+
+    - name: Show IP Address
+      debug:
+        msg: "IP Address: {{ ansible_default_ipv4['address'] }}"
+
