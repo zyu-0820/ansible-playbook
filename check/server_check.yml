@@ -10,15 +10,13 @@
       changed_when: false
     
     - name: Get memory details
-      shell: |
-        free -m | awk '/Mem:/ {
-          total=$2;
-          used=$3;
-          free=$4;
-          available=$7;
-          printf "total=%d used=%d free=%d available=%d", total, used, free, available
-        }'
+      shell: "free -m | awk '/Mem:/ {printf \"total=%d used=%d free=%d available=%d\", $2, $3, $4, $7}'"
       register: mem_result
+      changed_when: false
+    
+    - name: Get root disk usage
+      shell: "df -BG / | tail -1 | awk '{printf \"device=%s total=%s used=%s available=%s\", $1, $2, $3, $4}'"
+      register: disk_result
       changed_when: false
     
     - name: Show System Info
@@ -45,11 +43,10 @@
     - name: Check Disk Space (Root)
       debug:
         msg: >
-          Device: {{ ansible_mounts[0]['device'] }} |
-          Total: {{ (ansible_mounts[0]['size_total'] / 1024 / 1024 / 1024) | round(1) }} GB |
-          Used: {{ (ansible_mounts[0]['size_used'] / 1024 / 1024 / 1024) | round(1) }} GB |
-          Available: {{ (ansible_mounts[0]['size_available'] / 1024 / 1024 / 1024) | round(1) }} GB
-      when: ansible_mounts is defined and ansible_mounts | length > 0
+          Device: {{ disk_result.stdout.split('=')[1].split(' ')[0] }} |
+          Total: {{ disk_result.stdout.split('=')[2].split(' ')[0] | regex_replace('G','') }} GB |
+          Used: {{ disk_result.stdout.split('=')[3].split(' ')[0] | regex_replace('G','') }} GB |
+          Available: {{ disk_result.stdout.split('=')[4] | regex_replace('G','') }} GB
     
     - name: Show IP Address
       debug:
