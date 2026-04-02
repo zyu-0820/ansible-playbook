@@ -9,6 +9,18 @@
       register: load_result
       changed_when: false
     
+    - name: Get memory details
+      shell: |
+        free -m | awk '/Mem:/ {
+          total=$2;
+          used=$3;
+          free=$4;
+          available=$7;
+          printf "total=%d used=%d free=%d available=%d", total, used, free, available
+        }'
+      register: mem_result
+      changed_when: false
+    
     - name: Show System Info
       debug:
         msg: >
@@ -26,9 +38,9 @@
     - name: Check Memory Usage
       debug:
         msg: >
-          Total Memory: {{ (ansible_memtotal_mb / 1024) | round(1) }} GB |
-          Used Memory: {{ ((ansible_memtotal_mb - ansible_memfree_mb - ansible_cached_mb - ansible_buffers_mb) / 1024) | round(1) }} GB |
-          Available: {{ (ansible_memfree_mb / 1024) | round(1) }} GB
+          Total Memory: {{ (mem_result.stdout.split('=')[1].split(' ')[0] | int / 1024) | round(1) }} GB |
+          Used Memory: {{ (mem_result.stdout.split('=')[2].split(' ')[0] | int / 1024) | round(1) }} GB |
+          Available: {{ (mem_result.stdout.split('=')[3] | int / 1024) | round(1) }} GB
     
     - name: Check Disk Space (Root)
       debug:
@@ -37,8 +49,9 @@
           Total: {{ (ansible_mounts[0]['size_total'] / 1024 / 1024 / 1024) | round(1) }} GB |
           Used: {{ (ansible_mounts[0]['size_used'] / 1024 / 1024 / 1024) | round(1) }} GB |
           Available: {{ (ansible_mounts[0]['size_available'] / 1024 / 1024 / 1024) | round(1) }} GB
-      when: ansible_mounts is defined
+      when: ansible_mounts is defined and ansible_mounts | length > 0
     
     - name: Show IP Address
       debug:
         msg: "IP Address: {{ ansible_default_ipv4['address'] }}"
+      when: ansible_default_ipv4 is defined
